@@ -40,6 +40,7 @@ so no real user account or browser is needed.
 | P | Legacy `appSession` cookie: garbage and wrong-secret values rejected, `__session` wins when both are present |
 | Q | Callback binding: wrong `state`, a transaction cookie from another login, and a reflected `error_description` all fail safely |
 | R | Dynamic base URL mode (`audit4-dynamic.mjs`, separate server) — see below |
+| S | Malformed-session robustness (`audit5-malformed-session.mjs`) — **surfaces the SDK bug below** |
 
 ## Dynamic base URL mode
 
@@ -59,6 +60,82 @@ dropped silently, which makes the check pass for the wrong reason. The script
 uses `node:http` for that one case.
 
 ## Known findings
+
+### SDK bug — middleware 500s on a decryptable-but-malformed session cookie
+
+This is the one worth reporting upstream: an unhandled exception (HTTP 500) in
+`auth0.middleware`, reachable by an **unauthenticated** user, on the latest
+published version (v4.25.0) and on `main`.
+
+**Reproduce:** `node audit/audit5-malformed-session.mjs` (group S). An anonymous
+visitor hits `/auth/login`, takes the `__txn_` cookie it is handed, and replays
+that value as `__session`. Every subsequent request then returns 500 instead of
+being treated as unauthenticated:
+
+```
+[FAIL] replaying the txn cookie as __session does NOT 500   status=500
+[FAIL] same cookie on a page route does NOT 500             status=500
+[PASS] control: an undecryptable cookie is handled (401)     status=401
+```
+
+**Root cause.** On any non-auth request the middleware rolls the session:
+
+```ts
+const { error, session } = await this.getSessionWithDomainCheck(req.cookies);
+if (!error && session) {
+  await this.sessionStore.set(req.cookies, res.cookies, { ...session });
+}
+```
+
+`getSessionWithDomainCheck` returns any cookie that *decrypts*, without checking
+its shape. `sessionStore.set` (stateless-session-store.ts, also stateful) then does:
+
+```ts
+const maxAge = this.calculateMaxAge(session.internal.createdAt);   // no ?.
+```
+
+If the payload has no `internal` block this throws
+`TypeError: Cannot read properties of undefined (reading 'createdAt')`, which
+propagates out of `middleware` as a 500. Tellingly, `getSessionWithDomainCheck`
+two lines up already guards `session.internal?.sessionExpiresAt` and
+`session.internal?.mcd` with optional chaining — the write path just missed this one.
+
+**Why it is reachable pre-auth.** Every cookie the SDK issues is encrypted with
+the same key — `hkdf("sha256", secret, "", "JWE CEK", 32)` — with no per-purpose
+domain separation. The transaction cookie is handed to any anonymous visitor of
+`/auth/login`, and its payload (`nonce`, `codeVerifier`, `state`, `returnTo`, …)
+has no `internal` block. So a valid-under-key ciphertext of the wrong shape is
+obtainable without knowing `AUTH0_SECRET`. (Confirmed: the txn cookie decrypts
+cleanly under the session key.)
+
+**Impact — honest scoping.** Not an auth bypass: the replayed payload has no
+`user`, and the request crashes before any authorization decision, so it cannot
+impersonate anyone. The defect is (1) a spec/robustness violation — the contract
+everywhere else is "unusable cookie ⇒ no session ⇒ 401/redirect", and the
+decrypt layer already returns `null` for expired or undecryptable cookies — and
+(2) a conditional availability issue: `__session` is not `__Host-` prefixed, so a
+cookie planted in a victim's browser (subdomain cookie injection on a shared
+parent domain, MITM on cleartext HTTP, sibling-origin XSS) yields a persistent
+app-wide 500 the victim cannot easily self-diagnose.
+
+**Precedent.** [Issue #2081](https://github.com/auth0/nextjs-auth0/issues/2081)
+("Middleware crashes when JWT is expired") is the same class — middleware 500 on
+a bad session cookie — which the maintainers accepted and fixed at the
+`decrypt()` layer (catching `ERR_JWT_EXPIRED` / `ERR_JWE_*`). That fix covers
+crypto failures but not structural ones, so this variant slips through.
+
+**Fix (one line).** Guard the access —
+`this.calculateMaxAge(session.internal?.createdAt)` with a null-createdAt branch
+— or, better, validate shape in the store's `get()` and return `null` when
+`internal.createdAt` is missing, so a malformed cookie is treated as no session
+like every other bad cookie. Optionally add domain separation to the HKDF `info`
+per cookie purpose so a transaction ciphertext cannot decrypt as a session at
+all. An app-level stopgap is to wrap `auth0.middleware()` in try/catch and treat
+a throw as unauthenticated; this example keeps the faithful README middleware so
+the repro stays visible.
+
+### Lower-severity observations
+
 
 **Logout `returnTo` is not validated locally.** `handleLogout` in the SDK
 (v4.25.0) forwards `?returnTo=` straight into `post_logout_redirect_uri` without
