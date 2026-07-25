@@ -161,3 +161,31 @@ console.log("\nControl: does a real logout (delete()) clean up __FC_* correctly?
   console.log(`  all three __FC_* cookies cleared? ${allFcCleared ? "yes — delete() is correct" : "NO"}`);
   console.log("  (confirms the gap is specific to set()/shrink, not delete()/logout)");
 }
+
+console.log("\nFollow-up: is the resurrection permanent, or does it self-heal?");
+console.log("(does a THIRD, unrelated write — e.g. a normal rolling-session touch —");
+console.log(" re-persist the ghost, making 'disconnect' permanently ineffective");
+console.log(" until a full logout?)");
+{
+  // Reset: start fresh from the post-step-3 jar (which already shows connC back).
+  const req = newReqCookies(jarToHeader(jar));
+  const readBack = await store.get(req);
+  console.log(`  session read for the routine touch sees: ${JSON.stringify((readBack.connectionTokenSets ?? []).map(c => c.connection))}`);
+
+  // Simulate the middleware's passive rolling-session touch: literally what
+  // auth-client.ts does on every non-auth request — re-set() the session
+  // exactly as read, unmodified.
+  const res2 = newResCookies();
+  await store.set(req, res2, { ...readBack });
+  applyResponseToJar(jar, res2);
+
+  const afterTouch = await store.get(newReqCookies(jarToHeader(jar)));
+  const stillThere = (afterTouch.connectionTokenSets ?? []).map((c) => c.connection);
+  console.log(`  after a routine, unrelated page load: ${JSON.stringify(stillThere)}`);
+  if (stillThere.includes("connC")) {
+    console.log("  PERMANENT: connC survives an ordinary, unrelated session touch.");
+    console.log("  Every future 'disconnect' attempt re-derives its array length from this");
+    console.log("  ghost-inflated read, so the connection can never be fully removed by");
+    console.log("  set() alone — only a full logout (delete()) clears it.");
+  }
+}

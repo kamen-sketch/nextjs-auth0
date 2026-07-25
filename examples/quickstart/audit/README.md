@@ -42,7 +42,7 @@ so no real user account or browser is needed.
 | R | Dynamic base URL mode (`audit4-dynamic.mjs`, separate server) — see below |
 | S | Malformed-session robustness (`audit5-malformed-session.mjs`) — surfaces the middleware-500 bug below |
 | T | `returnTo` open redirect (`audit6-returnto-open-redirect.mjs` + `returnto-open-redirect.callback-proof.test.ts`) — P4, see below |
-| U | Connection-token resurrection (`audit7-connection-token-resurrection.mjs`) — **the strongest finding, see below** |
+| U | Connection-token resurrection (`audit7-connection-token-resurrection.mjs`) — **the strongest finding; full writeup: [`FINDING-connection-token-resurrection.md`](./FINDING-connection-token-resurrection.md)** |
 
 ## Dynamic base URL mode
 
