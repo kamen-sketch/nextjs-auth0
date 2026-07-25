@@ -5,7 +5,9 @@ const config = [
   ...nextCoreWebVitals,
   ...nextTypescript,
   {
-    ignores: [".next/**", "node_modules/**"]
+    // audit/ holds standalone probes (Node scripts + a reference .test.ts meant
+    // to be dropped into the SDK's own suite), not part of the Next.js app build.
+    ignores: [".next/**", "node_modules/**", "audit/**"]
   }
 ];
 

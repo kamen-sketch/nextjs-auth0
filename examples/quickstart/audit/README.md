@@ -40,7 +40,8 @@ so no real user account or browser is needed.
 | P | Legacy `appSession` cookie: garbage and wrong-secret values rejected, `__session` wins when both are present |
 | Q | Callback binding: wrong `state`, a transaction cookie from another login, and a reflected `error_description` all fail safely |
 | R | Dynamic base URL mode (`audit4-dynamic.mjs`, separate server) — see below |
-| S | Malformed-session robustness (`audit5-malformed-session.mjs`) — **surfaces the SDK bug below** |
+| S | Malformed-session robustness (`audit5-malformed-session.mjs`) — surfaces the middleware-500 bug below |
+| T | `returnTo` open redirect (`audit6-returnto-open-redirect.mjs` + `returnto-open-redirect.callback-proof.test.ts`) — **the reportable finding below** |
 
 ## Dynamic base URL mode
 
@@ -60,6 +61,78 @@ dropped silently, which makes the check pass for the wrong reason. The script
 uses `node:http` for that one case.
 
 ## Known findings
+
+### Open redirect (post-authentication) via `returnTo` — the valuable one
+
+**Class Auth0 has issued advisories for** (open redirect via unfiltered
+`returnTo`, e.g. GHSA-2mqv-4j3r-vjvp), unlike the DoS-adjacent items below which
+Bugcrowd rates out of scope. Present on v4.25.0 and `main`.
+
+**PoC.** `GET /auth/login?returnTo=/https://evil.example.com`. The victim logs in
+normally; after a successful callback the app redirects them to
+`https://evil.example.com/`.
+
+**Why the sanitiser misses it — an unsafe composition of two individually-correct
+functions.**
+
+- `/auth/login` runs `toSafeRedirect(returnTo, appBaseUrl)`, which validates the
+  *parsed URL's origin*. `"/https://evil.example.com"` parses as an absolute
+  **path** on the app origin (`new URL("/https://evil.example.com", app)` →
+  origin = app, pathname = `/https://evil.example.com`), so the origin check
+  passes and the SDK stores the pathname verbatim in the transaction cookie.
+- After a successful login, `defaultOnCallback` redirects to
+  `createRouteUrl(transactionState.returnTo, appBaseUrl)`, and `createRouteUrl`
+  calls `ensureNoLeadingSlash()`. Stripping the one leading slash turns
+  `/https://evil.example.com` back into `https://evil.example.com`, which
+  `new URL("https://evil.example.com", appBaseUrl)` resolves to a **different
+  origin**.
+
+Each function is reasonable alone; composed, `toSafeRedirect` "neutralises" the
+payload into a path and `createRouteUrl` un-neutralises it back into an absolute
+URL. Crucially this redirect is **purely application-side** — it is never sent to
+Auth0 as a `redirect_uri`, so the Allowed Callback / Logout URL allowlists that
+gate the login and logout redirects give **no protection here**.
+
+**The SDK's own tests already treat these as attack payloads but miss this path.**
+`src/test/fixtures/open-redirect-payloads.json` (485 entries) contains
+`/https://google.com`, `/http://google.com`, `/javascript:alert(1)` and friends,
+and `url-helpers.test.ts` asserts `toSafeRedirect(payload).toString()` starts with
+the app origin. That assertion passes —
+`toSafeRedirect("/https://google.com").toString()` is
+`http://localhost:3000/https://google.com` — because the test checks the *full
+URL string* and never simulates the `store pathname → createRouteUrl` round-trip
+that the runtime actually performs. So the vector is covered in spirit and
+missed in fact.
+
+**Reproduce.**
+- `node audit/audit6-returnto-open-redirect.mjs` — proves the two runtime
+  primitives with the real SDK: the live `/auth/login` stores the payload
+  verbatim, and the real `createRouteUrl` expands it off-origin.
+- `audit/returnto-open-redirect.callback-proof.test.ts` — wire-level proof using
+  the SDK's own test harness (mocked token exchange, no network): a successful
+  `handleCallback` with `returnTo: "/https://evil.example.com"` returns
+  `307 Location: https://evil.example.com/`. Verified passing against v4.25.0:
+
+  ```
+  [PROOF] status=307 Location=https://evil.example.com/ host=evil.example.com
+  ✓ passed
+  ```
+
+**Scope / severity.** Post-authentication open redirect: needs the victim to
+complete a login through the crafted link (or an active SSO session that
+completes it silently). Standard open-redirect impact — phishing that inherits
+the trusted login origin, and a stepping stone for token/code exfiltration in
+flows that place secrets in the URL. `javascript:` and `data:` payloads also
+survive the sanitiser (`/javascript:alert(1)` → `javascript:alert(1)`), though
+browsers do not navigate to those via a `Location` header, so the realistic sink
+is the `http(s)://` cross-origin redirect.
+
+**Fix.** After `ensureNoLeadingSlash`/`normalizeWithBasePath`, reject any path
+that still parses as absolute or scheme-relative before basing it — or re-run the
+same-origin check on the *final* `createRouteUrl` result, not only on the stored
+value at login time. Add the `store-pathname → createRouteUrl` round-trip to the
+`open-redirect-payloads.json` test so the fixture's own payloads are exercised
+end to end.
 
 ### SDK bug — middleware 500s on a decryptable-but-malformed session cookie
 
