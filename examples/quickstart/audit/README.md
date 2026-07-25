@@ -44,8 +44,31 @@ Verified not exploitable against a correctly configured tenant: Auth0 rejects an
 unregistered URL with `400 invalid_request`. It becomes a real open redirect only
 if **Allowed Logout URLs** contains a wildcard, so keep that list exact.
 
-**`/auth/access-token` shipped without cache directives.** The SDK calls
-`addCacheControlHeadersForSession` on 13 responses but not on the one returning a
-bearer token, so it had no `no-store` while the less sensitive `/auth/profile`
-did. `proxy.ts` in this example compensates by marking every `/auth/*` response
+**`/auth/access-token` returns a bearer token without cache directives when the
+token did not need refreshing.** This is a scope gap, not an oversight — worth
+understanding before reporting it upstream.
+
+`addCacheControlHeadersForSession` exists to remediate
+[CVE-2025-48947](https://nvd.nist.gov/vuln/detail/CVE-2025-48947) (CWE-525,
+"CDN Caching of Session Cookies", affecting 4.0.1–4.6.0), whose threat model is
+a shared cache storing a response that carries `Set-Cookie`. Accordingly the SDK
+couples the headers to the cookie write, in `#updateSessionAfterTokenRetrieval`:
+
+```ts
+if (sessionChanges) {
+  await this.sessionStore.set(req.cookies, res.cookies, finalSession);
+  addCacheControlHeadersForSession(res);   // only on this branch
+}
+```
+
+`getSessionChangesAfterGetAccessToken` returns `undefined` when the access token
+is still valid, so the common path — token unexpired, no refresh — writes no
+cookie and therefore gets no cache headers, while the response body still
+contains the access token. Verified against v4.25.0: `Cache-Control: null`,
+`Set-Cookie` count 0.
+
+The CVE is fully patched; what is not covered is
+[RFC 6749 §5.1](https://www.rfc-editor.org/rfc/rfc6749#section-5.1), which
+requires `no-store` on *any* response containing tokens, independent of cookies.
+`proxy.ts` in this example closes that gap by marking every `/auth/*` response
 uncacheable.

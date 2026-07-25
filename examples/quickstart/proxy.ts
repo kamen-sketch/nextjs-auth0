@@ -9,10 +9,12 @@ import { auth0 } from "./lib/auth0";
 export async function proxy(request: Request) {
   const res = await auth0.middleware(request);
 
-  // Defence in depth: the SDK sets no-store on most auth responses, but as of
-  // v4.25.0 `/auth/access-token` is not one of them — it returns a bearer token
-  // with no cache directives, which a shared or heuristic cache may store. Mark
-  // every auth response uncacheable regardless of which handler produced it.
+  // Defence in depth. As of v4.25.0 the SDK attaches no-store to auth responses
+  // that write a session cookie (the CVE-2025-48947 fix), so `/auth/access-token`
+  // gets them only when the token was refreshed. On the common path — token still
+  // valid, no cookie written — it returns a bearer token with no cache directives,
+  // which RFC 6749 §5.1 requires for any response containing tokens. Mark every
+  // auth response uncacheable regardless of which handler produced it.
   if (new URL(request.url).pathname.startsWith("/auth/")) {
     res.headers.set(
       "Cache-Control",
