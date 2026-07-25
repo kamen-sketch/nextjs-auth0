@@ -41,7 +41,8 @@ so no real user account or browser is needed.
 | Q | Callback binding: wrong `state`, a transaction cookie from another login, and a reflected `error_description` all fail safely |
 | R | Dynamic base URL mode (`audit4-dynamic.mjs`, separate server) — see below |
 | S | Malformed-session robustness (`audit5-malformed-session.mjs`) — surfaces the middleware-500 bug below |
-| T | `returnTo` open redirect (`audit6-returnto-open-redirect.mjs` + `returnto-open-redirect.callback-proof.test.ts`) — **the reportable finding below** |
+| T | `returnTo` open redirect (`audit6-returnto-open-redirect.mjs` + `returnto-open-redirect.callback-proof.test.ts`) — P4, see below |
+| U | Connection-token resurrection (`audit7-connection-token-resurrection.mjs`) — **the strongest finding, see below** |
 
 ## Dynamic base URL mode
 
@@ -61,6 +62,90 @@ dropped silently, which makes the check pass for the wrong reason. The script
 uses `node:http` for that one case.
 
 ## Known findings
+
+### Revoked connection tokens are silently resurrected (incomplete cleanup)
+
+**Severity: real, but not a classic VRT category — closer to CWE-459
+(Incomplete Cleanup) / broken revocation than a textbook web vuln.** Found by
+going deeper than input validation: reviewing what happens when the SDK's own
+*array-shrink* path runs, not what happens to a malicious string. No attacker
+network position, no forged cookie, no race timing required — it reproduces
+100% deterministically from the app's own normal operation. Present on v4.25.0
+and `main`.
+
+**The bug.** `getAccessTokenForConnection()` stores each entry of
+`session.connectionTokenSets` in its own cookie, named positionally: `__FC_0`,
+`__FC_1`, `__FC_2`, … `StatelessSessionStore.get()` reconstructs the array by
+decrypting *every* cookie whose name starts with `__FC`, with no regard for how
+many entries the current session actually has. `connectionTokenSets` is a
+public field of `SessionData` and is passed into and returned from the
+documented `beforeSessionSaved` hook — the natural, expected way to implement
+"let the user disconnect a linked account." When an app does that — returns a
+*shorter* `connectionTokenSets` array from the hook — `StatelessSessionStore.set()`
+only writes cookies for indices `0..newLength-1`. It never deletes the trailing
+`__FC_N` cookies that are no longer needed. Contrast this with the *main*
+session cookie's chunking (`setChunkedCookie` in cookies.ts), which explicitly
+deletes trailing chunks when a session shrinks — the equivalent cleanup for
+`connectionTokenSets` cookies simply doesn't exist.
+
+The orphaned cookie is not expired (it has the connection's normal, full-length
+TTL), so it isn't pruned by the JWE-expiry check either — that check only drops
+entries whose *own* encrypted `exp` has passed
+(`stateless-session-store.test.ts`, "...exclude a connection when the JWE is
+expired"), and this one hasn't. It just sits in the browser, fully valid, until
+`get()` picks it straight back up on the user's very next request — no attacker
+action needed.
+
+**Proof** (`audit7-connection-token-resurrection.mjs`, runs directly against
+the real built `StatelessSessionStore`, no HTTP, no mocking of SDK logic — only
+the cookie *transport* between two `set()` calls is simulated, exactly as a
+browser applies `Set-Cookie` headers):
+
+```
+Step 1: connect three accounts (A, B, C) → __FC_0, __FC_1, __FC_2
+Step 2: "disconnect C" saves connectionTokenSets = [A, B]
+        did this response delete __FC_2?  NO
+Step 3: next read → connectionTokenSets = ["connA","connB","connC"]
+FINDING CONFIRMED — connC's token: "tokC" (unchanged, still fully valid)
+```
+
+The script also runs a control: a real `logout()` (`StatelessSessionStore.delete()`)
+correctly clears **all** `__FC_*` cookies via
+`getConnectionTokenSetsCookies(...).forEach(...)`. That confirms the gap is
+specific to `set()` — any shrink short of full logout — not a general cookie-
+cleanup miss.
+
+**Impact.** If an app's UI tells the user a connection was disconnected, and the
+app (reasonably) trusts `session.connectionTokenSets` as the source of truth
+for "is this still linked," the disconnect does not actually hold — the stale
+token is available again for the app to use against the third-party API on the
+user's next request, with no indication anything is wrong. This is a
+self-contained failure of the app's own revocation logic (not a third party
+attacking the user), so it's not "exploitable" in the classic sense, but it
+does mean a documented extension point silently does not do what a developer
+implementing it would reasonably expect. It also compounds under concurrency:
+two concurrent session-saves computed from the same stale base (e.g. a
+"disconnect" request racing an unrelated token refresh) can produce the same
+resurrection non-deterministically, since writes are positional/absolute with
+no compare-and-swap — the sequential repro above is just the cleanest way to
+show it.
+
+**Where to report.** A GitHub issue on `auth0/nextjs-auth0` at minimum (clear
+functional defect with a byte-for-byte repro); worth asking the maintainers
+whether they'd rather handle it as a GHSA given the "silently un-revoke a
+credential" angle — that judgment call belongs to them, not this audit.
+
+**Fix.** In `StatelessSessionStore.set()`, before writing the new
+`connectionTokenSets` cookies, delete any existing `__FC_N` cookie whose index
+is `>= connectionTokenSets.length` — the same pattern `setChunkedCookie` already
+uses for the main session cookie's trailing chunks.
+
+**Scope.** Confirmed specific to `StatelessSessionStore` (`grep` for
+`connectionTokenSets`/`__FC` in `stateful-session-store.ts` returns nothing) —
+i.e. it hits every app that has *not* configured a custom `sessionStore`, which
+is the SDK's default. Apps using database sessions (`sessionStore` option) are
+unaffected: the whole session, `connectionTokenSets` included, is one blob
+overwritten atomically in the developer's store, so a shrink just shrinks it.
 
 ### Open redirect (post-authentication) via `returnTo`
 
