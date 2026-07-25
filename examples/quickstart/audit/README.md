@@ -62,11 +62,20 @@ uses `node:http` for that one case.
 
 ## Known findings
 
-### Open redirect (post-authentication) via `returnTo` — the valuable one
+### Open redirect (post-authentication) via `returnTo`
 
-**Class Auth0 has issued advisories for** (open redirect via unfiltered
-`returnTo`, e.g. GHSA-2mqv-4j3r-vjvp), unlike the DoS-adjacent items below which
-Bugcrowd rates out of scope. Present on v4.25.0 and `main`.
+**Severity: low (Bugcrowd VRT: Open Redirect → GET-Based = P4).** Real bug, and
+the same class Auth0 has advisoried before (GHSA-2mqv-4j3r-vjvp), but not a
+bounty-grade finding, and here's the honest reason it can't be elevated: the
+authorization code is exchanged for tokens **server-side in `handleCallback`
+before** the redirect fires, so the redirect to the attacker origin carries no
+code, token, or session — it's phishing-only, not account takeover. Present on
+v4.25.0 and `main`.
+
+**Right channel: a GitHub Security Advisory on `auth0/nextjs-auth0`, not
+Bugcrowd.** Auth0's Bugcrowd program scopes the hosted service (`*.auth0.com`);
+SDK bugs go through the repo's private disclosure and yield credit/a CVE, not a
+service-bounty payout. A P4 open redirect there is low priority regardless.
 
 **PoC.** `GET /auth/login?returnTo=/https://evil.example.com`. The victim logs in
 normally; after a successful callback the app redirects them to
