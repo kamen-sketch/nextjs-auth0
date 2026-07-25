@@ -1,0 +1,25 @@
+{
+  "name": "quickstart",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@auth0/nextjs-auth0": "^4.25.0",
+    "next": "16.2.11",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.6",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "16.2.11",
+    "typescript": "~5.9.3"
+  }
+}
