@@ -34,6 +34,29 @@ so no real user account or browser is needed.
 | J | Session lifetime: `Max-Age` present, and `absoluteDuration` caps a long-lived session |
 | K | Oversized sessions still decode (SDK chunks into `__session.0` / `.1`) |
 | L | Route handlers reject unsupported methods |
+| M | Authorization parameter injection: `redirect_uri`, `client_id`, `response_type`, `code_challenge[_method]`, `state`, `nonce` cannot be overridden from the query string |
+| N | Randomness: `state`, `nonce`, `code_challenge`, `code_verifier` differ across logins; parallel transactions get distinct cookies |
+| O | Oversized sessions chunk into `__session__0/1/…` under the 4096-byte browser limit, the unchunked cookie is deleted, and logout clears every chunk |
+| P | Legacy `appSession` cookie: garbage and wrong-secret values rejected, `__session` wins when both are present |
+| Q | Callback binding: wrong `state`, a transaction cookie from another login, and a reflected `error_description` all fail safely |
+| R | Dynamic base URL mode (`audit4-dynamic.mjs`, separate server) — see below |
+
+## Dynamic base URL mode
+
+`audit4-dynamic.mjs` needs a server started *without* `APP_BASE_URL`, so it runs
+separately:
+
+```bash
+grep -v '^APP_BASE_URL' .env.local > .env.dynamic
+cp .env.local .env.backup && cp .env.dynamic .env.local
+pnpm dev -p 3001
+BASE=http://localhost:3001 node audit/audit4-dynamic.mjs
+cp .env.backup .env.local          # restore
+```
+
+Note that `fetch()` cannot set `Host` — it is a forbidden header name and is
+dropped silently, which makes the check pass for the wrong reason. The script
+uses `node:http` for that one case.
 
 ## Known findings
 
@@ -72,3 +95,29 @@ The CVE is fully patched; what is not covered is
 requires `no-store` on *any* response containing tokens, independent of cookies.
 `proxy.ts` in this example closes that gap by marking every `/auth/*` response
 uncacheable.
+
+**Dynamic base URL mode makes `redirect_uri` attacker-controllable, and only the
+Auth0 allowlist stops it.** With `APP_BASE_URL` unset the SDK derives the base
+URL from the request, and *both* `Host` and `X-Forwarded-Host` flow straight into
+`redirect_uri` — there is no host allowlist in the SDK. `X-Forwarded-Proto`
+likewise controls the scheme. Measured:
+
+| Sent | Resulting `redirect_uri` |
+| ---- | ------------------------ |
+| *(none)* | `http://localhost:3001/auth/callback` |
+| `Host: evil.example.com` | `http://evil.example.com/auth/callback` |
+| `X-Forwarded-Host: evil.example.com` | `http://evil.example.com/auth/callback` |
+| `X-Forwarded-Proto: https` | `https://localhost:3001/auth/callback` |
+
+This is the SDK's documented design — the README states the Host header is
+untrusted and Auth0's Allowed Callback URLs are the safety net — and it holds:
+Auth0 answered `403 Callback URL mismatch` for the forged host.
+
+The risk is the combination. Dynamic mode exists for preview deployments, which
+is exactly where a wildcard entry like `https://*-myorg.vercel.app/auth/callback`
+is most tempting. A wildcard removes the only control: any attacker-supplied host
+matching the pattern would be accepted and the authorization code delivered off-
+origin. `X-Forwarded-Host` matters most here, since a proxy that forwards a
+client-supplied value makes this reachable without controlling DNS. Keep
+`APP_BASE_URL` set on stable domains, register callback URLs explicitly, and make
+sure the edge strips client-supplied `X-Forwarded-*`.

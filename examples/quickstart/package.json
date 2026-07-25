@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "audit:auth": "node audit/audit.mjs && node audit/audit2.mjs"
+    "audit:auth": "node audit/audit.mjs && node audit/audit2.mjs && node audit/audit3.mjs"
   },
   "dependencies": {
     "@auth0/nextjs-auth0": "^4.25.0",
