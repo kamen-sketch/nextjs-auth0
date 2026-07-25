@@ -75,11 +75,10 @@ check(
   `status=${replayPage.status} (expected 307 -> /auth/login)`
 );
 
-// --- Step 4: the crash is persistent for whoever holds the cookie ---------
-// Every subsequent request with the cookie present repeats the 500, so a cookie
-// planted in a victim's browser (subdomain cookie injection, MITM on http,
-// sibling-origin XSS) is a denial of service against that victim across the
-// whole app, not a one-off.
+// --- Step 4: the crash repeats for as long as the cookie is present -------
+// It is deterministic, not a transient — every request with the malformed
+// cookie 500s. (This is what a cookie-injection availability angle would rest
+// on, but that needs extra preconditions and is not the point of the bug.)
 let persistent = true;
 for (let i = 0; i < 3; i++) {
   const r = await raw("/", { headers: { cookie: `__session=${txnValue}` } });

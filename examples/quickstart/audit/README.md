@@ -63,9 +63,34 @@ uses `node:http` for that one case.
 
 ### SDK bug — middleware 500s on a decryptable-but-malformed session cookie
 
-This is the one worth reporting upstream: an unhandled exception (HTTP 500) in
-`auth0.middleware`, reachable by an **unauthenticated** user, on the latest
-published version (v4.25.0) and on `main`.
+**File this as a bug, not a security advisory.** The same class —
+[#2081](https://github.com/auth0/nextjs-auth0/issues/2081), "Middleware crashes
+when JWT is expired" — was handled as an ordinary bug, and this is the same
+shape: the middleware should degrade to "no session" on an unusable cookie, and
+instead it throws. Treating it as a vulnerability oversells it (see *Scope*
+below), so the report should be a plain bug report.
+
+**The claim, stated precisely.** It is not "you can send a 500" — anyone can make
+any server 500 with bad input; that alone is not interesting. The claim is a
+*contract violation*:
+
+> `auth0.middleware` handles an invalid session cookie by throwing an unhandled
+> `TypeError` (→ HTTP 500) in one specific case — a cookie that **decrypts** but
+> whose payload has no `internal` block — whereas every other invalid-cookie case
+> (undecryptable, tampered, expired) is handled gracefully by returning `null`
+> and treating the request as unauthenticated. So the SDK already has a defined,
+> safe behaviour for bad cookies; this input misses it and crashes instead.
+
+The interesting part is not the 500 itself but that it is the *odd one out*: the
+control case in the repro (an undecryptable cookie) returns a clean 401 from the
+same code path, which is exactly what the malformed-but-decryptable cookie should
+also do.
+
+Confirmed on v4.25.0 and on `main`, and in a **production build**
+(`next build && next start`, not just `next dev`): all of `/`, `/dashboard` and
+`/api/me` return `500 Internal Server Error`, with
+`TypeError: Cannot read properties of undefined (reading 'createdAt')` in the
+server log.
 
 **Reproduce:** `node audit/audit5-malformed-session.mjs` (group S). An anonymous
 visitor hits `/auth/login`, takes the `__txn_` cookie it is handed, and replays
@@ -100,23 +125,26 @@ propagates out of `middleware` as a 500. Tellingly, `getSessionWithDomainCheck`
 two lines up already guards `session.internal?.sessionExpiresAt` and
 `session.internal?.mcd` with optional chaining — the write path just missed this one.
 
-**Why it is reachable pre-auth.** Every cookie the SDK issues is encrypted with
-the same key — `hkdf("sha256", secret, "", "JWE CEK", 32)` — with no per-purpose
-domain separation. The transaction cookie is handed to any anonymous visitor of
-`/auth/login`, and its payload (`nonce`, `codeVerifier`, `state`, `returnTo`, …)
-has no `internal` block. So a valid-under-key ciphertext of the wrong shape is
-obtainable without knowing `AUTH0_SECRET`. (Confirmed: the txn cookie decrypts
-cleanly under the session key.)
+**How the repro obtains such a cookie.** You need a payload that decrypts under
+the session key but has no `internal` block. The audit uses the transaction
+cookie for this: every cookie the SDK issues shares one key —
+`hkdf("sha256", secret, "", "JWE CEK", 32)`, no per-purpose domain separation —
+and the `__txn_` cookie handed to any anonymous `/auth/login` visitor has exactly
+that shape (`nonce`, `codeVerifier`, `state`, `returnTo`, … and no `internal`).
+This is just a convenient way to demonstrate the crash without `AUTH0_SECRET`; it
+is not required for the bug. Any stale, truncated, or version-mismatched
+`__session` value that still decrypts hits the same path.
 
-**Impact — honest scoping.** Not an auth bypass: the replayed payload has no
-`user`, and the request crashes before any authorization decision, so it cannot
-impersonate anyone. The defect is (1) a spec/robustness violation — the contract
-everywhere else is "unusable cookie ⇒ no session ⇒ 401/redirect", and the
-decrypt layer already returns `null` for expired or undecryptable cookies — and
-(2) a conditional availability issue: `__session` is not `__Host-` prefixed, so a
-cookie planted in a victim's browser (subdomain cookie injection on a shared
-parent domain, MITM on cleartext HTTP, sibling-origin XSS) yields a persistent
-app-wide 500 the victim cannot easily self-diagnose.
+**Scope — why this is a bug and not a vulnerability.** It is *not* an auth
+bypass: the payload has no `user`, and the request crashes before any
+authorization decision, so nothing is impersonated and no protected data is
+returned. The only real-world consequence beyond "an error page instead of a
+redirect" would be availability, and only under extra preconditions (a malformed
+`__session` planted in a victim's browser — `__session` is not `__Host-`
+prefixed — via subdomain cookie injection, cleartext-HTTP MITM, or sibling-origin
+XSS, each of which is its own bigger problem). That is thin, so it is mentioned
+for completeness, not as the headline. The defensible core is the robustness
+contract violation, which stands on its own regardless of the security angle.
 
 **Precedent.** [Issue #2081](https://github.com/auth0/nextjs-auth0/issues/2081)
 ("Middleware crashes when JWT is expired") is the same class — middleware 500 on
