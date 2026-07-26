@@ -32,7 +32,47 @@ if I send it garbage?".
 ## 2. Why this matters (and why we're not over-claiming)
 
 We want to be precise about what this is and is not, because the honest answer
-determines whether this belongs in a GitHub issue or a security advisory.
+determines whether this belongs in a GitHub issue or a security advisory. This
+section was tightened after a specific, useful challenge during review: *"in
+the real world, if a token is stolen, doesn't it stay valid regardless of
+logout anyway?"* That's true, and it's worth answering directly before
+describing this finding's impact, because the two are easy to conflate and
+they are not the same thing.
+
+**The "stolen token survives logout" question, answered directly, because
+this SDK does something worth crediting here.** For the *primary* Auth0
+refresh token, no — this SDK actively defends against exactly that scenario.
+`handleLogout()` calls `performTokenRevocation()` against the refresh token
+before clearing the session
+(`src/server/auth-client.ts`, ~line 1114), with an explicit code comment —
+*"Revoke the refresh token before clearing the session so it cannot be
+replayed after logout (e.g. from a stolen session cookie)"* — and dedicated
+test coverage (`auth-client.test.ts`, `describe("refresh token revocation on
+logout")`, 6 tests). So if an attacker has a copy of a stolen session cookie
+from *before* the legitimate user logs out, that copy cannot be used to mint
+*new* tokens after logout — refresh will fail. This extends transitively to
+connection tokens too: `ConnectionTokenSet` has no refresh token of its own
+(`src/types/token-vault.ts`) — refreshing one requires re-presenting the
+*primary* refresh token to Auth0's federated-connection-token-exchange
+endpoint (`getConnectionTokenSet()`, `src/server/auth-client.ts` ~line 3321),
+which is now revoked. The only thing that survives any logout, in this SDK or
+any OAuth system, is the *last already-issued* access token, valid until its
+own short TTL naturally expires — that's inherent to stateless bearer-token
+validation everywhere, not a gap in this SDK.
+
+**This finding is not that scenario at all — no theft, no attacker.** The
+repro in §4 has zero attacker action. The *legitimate* user, in their own
+unmodified browser, asks the app to forget a connection; the app tries to
+comply; the removal silently fails and the entry comes back on the user's own
+next page load. This is a data-integrity bug in the SDK's own session
+bookkeeping, not a credential-theft or revocation-window problem. Given that,
+the honest ceiling on what "disconnect" could ever guarantee — even with this
+bug fixed — is narrower than "instantly kill the token everywhere": it was
+always just "stop *this app* from continuing to offer/use this token going
+forward, locally," the same way logout's refresh-token revocation stops
+*future* token issuance rather than retroactively invalidating an
+already-issued access token. This bug takes away even that narrower, local
+guarantee.
 
 **What it is:** an application-level revocation control silently fails,
 permanently, with no workaround short of destroying the entire session. That
@@ -50,6 +90,10 @@ whether an external attacker is involved.
 - **Not a credential-theft bug.** The resurrected token is one the app already
   legitimately possessed a moment earlier; the bug is failing to forget it, not
   leaking it to anyone new.
+- **Not a logout/revocation-window bug.** Unlike the primary refresh token
+  (which the SDK correctly revokes on logout, see above), this finding isn't
+  about what survives logout at all — it reproduces with no logout step
+  anywhere in the sequence.
 - **Not necessarily "live" at the third-party IdP.** Whether the resurrected
   token can still be used to call Google/GitHub/etc. depends on whether the
   app's "disconnect" feature *also* revokes the grant server-side at the IdP
@@ -306,6 +350,7 @@ export async function POST(_req: Request, { params }: { params: { connection: st
 | Is it deterministic? | Yes — 100% reproducible, not a race. |
 | Is it self-healing? | No — confirmed permanent until full logout (§4.1, follow-up). |
 | Does severity depend on app-specific behavior? | Yes — whether the resurrected token is still honored by the third-party IdP, and whether any app code path actually re-uses a "removed" connection. |
+| Is this a token-theft / logout-revocation-window issue? | No — see §2. Logout's refresh-token revocation is unrelated and, separately, confirmed working correctly. |
 
 The concrete harm is a **broken security control**: an application's own
 "disconnect this connection" feature does not durably do what it says, for as
@@ -334,6 +379,14 @@ compromise than is supported by evidence:
 - We did not attempt to chain this with the previously-documented
   `returnTo` open redirect or the middleware-500 finding; there is no
   mechanism by which either interacts with `connectionTokenSets` cleanup.
+- **Logout's primary-refresh-token revocation is correct and unrelated.**
+  Checked specifically because it's the natural "but doesn't a stolen token
+  survive logout anyway?" question (§2): `handleLogout()` does revoke the
+  refresh token server-side, with dedicated test coverage, and that
+  transitively blocks minting *new* connection tokens after logout too (they
+  require the primary refresh token to exchange). This finding doesn't
+  interact with or weaken that protection — it reproduces with no logout step
+  at all.
 
 ## 7. Remediation
 
