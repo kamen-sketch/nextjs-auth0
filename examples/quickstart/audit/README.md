@@ -44,6 +44,7 @@ so no real user account or browser is needed.
 | T | `returnTo` open redirect (`audit6-returnto-open-redirect.mjs` + `returnto-open-redirect.callback-proof.test.ts`) — P4, see below |
 | U | Connection-token cache not invalidated on shrink (`audit7-connection-token-resurrection.mjs`) — real bug, **security framing retracted on review**: `connectionTokenSets` is a pure cache with no gatekeeping role. Writeup: [`FINDING-connection-token-resurrection.md`](./FINDING-connection-token-resurrection.md) |
 | V | Connect-account completion not bound to initiating session (`connect-account-cross-session.callback-proof.test.ts`) — SDK-level defense confirmed absent; server-side (Auth0) enforcement **not yet verified**, live test designed but on hold pending manual follow-up. Writeup: [`FINDING-connect-account-cross-session.md`](./FINDING-connect-account-cross-session.md) |
+| W | IPSIE session-ceiling bypass for connection tokens (`ipsie-ceiling-connection-token-bypass.proof.test.ts`) — **confirmed, no server-side caveat**: `getAccessTokenForConnection()` mints fresh third-party tokens for sessions whose enterprise-mandated ceiling passed a year ago. Writeup: [`FINDING-ipsie-ceiling-connection-token-bypass.md`](./FINDING-ipsie-ceiling-connection-token-bypass.md) |
 
 ## Dynamic base URL mode
 
