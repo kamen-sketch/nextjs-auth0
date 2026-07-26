@@ -43,6 +43,7 @@ so no real user account or browser is needed.
 | S | Malformed-session robustness (`audit5-malformed-session.mjs`) — surfaces the middleware-500 bug below |
 | T | `returnTo` open redirect (`audit6-returnto-open-redirect.mjs` + `returnto-open-redirect.callback-proof.test.ts`) — P4, see below |
 | U | Connection-token cache not invalidated on shrink (`audit7-connection-token-resurrection.mjs`) — real bug, **security framing retracted on review**: `connectionTokenSets` is a pure cache with no gatekeeping role. Writeup: [`FINDING-connection-token-resurrection.md`](./FINDING-connection-token-resurrection.md) |
+| V | Connect-account completion not bound to initiating session (`connect-account-cross-session.callback-proof.test.ts`) — SDK-level defense confirmed absent; server-side (Auth0) enforcement **not yet verified**, live test designed but on hold pending manual follow-up. Writeup: [`FINDING-connect-account-cross-session.md`](./FINDING-connect-account-cross-session.md) |
 
 ## Dynamic base URL mode
 
