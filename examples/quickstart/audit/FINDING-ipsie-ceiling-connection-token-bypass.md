@@ -218,3 +218,66 @@ reasonable only if there's a concrete case where continued third-party access
 past the ceiling is actually desired behavior (e.g. a long-running background
 sync that's explicitly meant to outlive the interactive session) — which
 would need to be an opt-in, not the current unconditional bypass.
+
+## 7. Official documentation check — is `skipCeilingCheck: true` documented/intended, or a gap?
+
+Checked sources external to this SDK's own README/EXAMPLES.md:
+
+- Auth0 docs: *Session Lifetime Limits* (`session_expiry` / upstream-IdP ceiling)
+- Auth0 docs: *Session Lifecycle*
+- Auth0 docs: *Refresh Token Exchange with Token Vault*
+- Auth0 docs: *Connected Accounts for Token Vault*
+- Auth0 docs: *Token Vault* (overview)
+- IPSIE itself: `oauth.net/ipsie/` and the OpenID Foundation IPSIE working-group charter (`openid.net/wg/ipsie/ipsie-charter`)
+
+**Findings:**
+
+1. Auth0's own docs describe `session_expiry` strictly as *"an upper bound on
+   the user's session"* (the primary Auth0 session, evaluated as the minimum
+   of the upstream IdP claim, the tenant's absolute session expiration, and
+   any Actions-set expiry). None of the Token Vault, Refresh Token Exchange,
+   or Connected Accounts pages mention `session_expiry`, session ceilings, or
+   session termination at all. The refresh-token-exchange doc describes
+   validation purely as: does the refresh token belong to a known user
+   profile, does that profile have the requested connected account — no
+   session-state check is documented anywhere in that flow.
+2. That means this isn't just under-documented in the SDK — **the
+   interaction between these two Auth0 platform features (IPSIE session
+   ceiling, and Token Vault/Connected Accounts refresh-token exchange) is
+   undocumented on the Auth0 platform side too.** There is no official page
+   asserting "Token Vault exchanges are also bound by `session_expiry`," but
+   there is equally no page asserting "Token Vault exchanges are
+   intentionally exempt from it." The SDK code comment's rationale
+   ("connection tokens follow the upstream IdP's own TTLs, not the IPSIE
+   session ceiling") is not traceable to any Auth0 or IPSIE source found —
+   it reads as the SDK authors' own interpretive choice, not a cited platform
+   guarantee.
+3. IPSIE's own charter states its logout/termination scope is explicitly
+   **not** limited to the primary session: *"Define an interoperability
+   profile of logout specifications to enable an identity provider to revoke
+   sessions and **tokens of downstream applications**."* A connection token
+   used to call a third-party API (Google, GitHub, Slack) on the user's
+   behalf is conceptually exactly this kind of downstream-application token
+   — the exact category IPSIE's stated purpose is meant to reach.
+
+**Conclusion:** `skipCeilingCheck: true` is not confirmed anywhere as
+documented, intentional Auth0 platform behavior — neither Auth0's own docs
+nor the IPSIE spec/charter say connection-token minting is meant to survive
+past the session ceiling. It's an unaddressed gap in both the SDK and the
+platform docs, and it runs against IPSIE's own stated goal of termination
+reaching "tokens of downstream applications." (This audit could not test
+Auth0's live backend behavior for a real IPSIE-enabled enterprise
+connection + Token Vault combination — that would need a live tenant
+configured with both features — so this conclusion rests on the absence of
+any documented exemption, combined with the already-demonstrated fact from
+§3–§4b that the SDK is the sole enforcement layer regardless of what Auth0's
+backend does.)
+
+**Practical verdict:** yes, this is a security issue — a real,
+runtime-confirmed access-control gap (insufficient session expiration,
+comparable to CWE-613) in the one code path meant to gate access after an
+enterprise-mandated session termination. It's not a critical/RCE-class bug;
+it's a stale-session/broken-session-management class issue whose actual
+severity is bounded by what a given app does with
+`getAccessTokenForConnection()` after termination — which is why §5
+deliberately doesn't assign a single generic severity number.
