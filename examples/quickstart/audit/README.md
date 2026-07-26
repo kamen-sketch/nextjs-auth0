@@ -18,6 +18,48 @@ pnpm audit:auth
 Authenticated cases use `generateSessionCookie` from `@auth0/nextjs-auth0/testing`,
 so no real user account or browser is needed.
 
+## Independent verification (`pnpm audit:verify`)
+
+`verify_findings.py` re-derives the core factual claims behind findings T, U,
+V, and W by mechanically parsing the raw TypeScript source in Python —
+deliberately a different language and method (brace/paren-depth counting
+over the text, not running the code) from the JS/vitest proofs above, so a
+mistake in how those proofs represented the source would show up here
+independently rather than being silently confirmed by the same reasoning
+twice. Needs no running server, no network, no SDK build:
+
+```bash
+pnpm audit:verify
+```
+
+It checks both directions on purpose — claims that should be `True` **and**
+controls that should also be `True` for an unrelated, contrasting reason
+(e.g. "the primary token path DOES enforce the ceiling," "logout DOES clean
+up every `__FC_*` cookie") — so a script that just rubber-stamped everything
+as confirmed would visibly fail those controls instead of passing by luck.
+
+This script went through three real bugs during development — a wrong
+file search, and two brace/paren-matching regexes that silently extracted
+the wrong span (once landing inside a `Promise<{...}>` return-type generic,
+once inside a JSDoc `{Type}` annotation on an unrelated overload, once
+inside a parameter type's `import("./cookies.js")` call) — each caught by
+a check unexpectedly failing or returning "COULD NOT LOCATE", diagnosed with
+real debugging rather than re-run-until-green, and documented in
+`find_function_body`'s docstring as the reason its final design does real
+paren/brace-depth counting in stages instead of trying to regex-guess where
+a signature ends. All 11 checks (7 direct claims + 4 controls) pass as of
+this writing; a failing run means either a finding needs revisiting or this
+script's parsing broke again — the failure output says which claim, with the
+extracted (wrong) content, to make that diagnosis fast either way.
+
+**What this can and cannot tell you:** it confirms the code contains the
+constructs each finding claims (a specific guard present/absent, a specific
+argument passed, a field present/absent in a type) — real static facts about
+the source. It says nothing about runtime behavior beyond that, and nothing
+about Auth0's own server-side enforcement — the open questions in
+`FINDING-connect-account-cross-session.md` remain open regardless of what
+this script finds.
+
 ## Coverage
 
 | Group | What it asserts |
