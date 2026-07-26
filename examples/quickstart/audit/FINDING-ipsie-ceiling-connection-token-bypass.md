@@ -122,6 +122,58 @@ ceiling in future → passes; ceiling absent → passes). None of them exercise
 test in either direction — nothing currently locks in "this is intentional
 and here's what it allows," nor would anything break if it were tightened.
 
+## 4b. Runtime confirmation (real HTTP, real server, no JS tooling)
+
+The proof above runs the SDK's own code but only reachable through its
+internal vitest harness. To rule out that being an artifact of that harness,
+the same claim was re-verified against the actual running example app —
+real Next.js dev server, the real compiled `@auth0/nextjs-auth0` dist, real
+middleware — driven entirely by a from-scratch Python HTTP client with no
+JS/vitest involved at any point.
+
+`audit/nextjs_auth0_jwe.py` independently re-implements the SDK's session-
+cookie scheme (`src/server/cookies.ts`) — HKDF-SHA256 key derivation and
+AES-256-GCM, hand-built JWE Compact Serialization — using only Python's
+`cryptography` package. Before being trusted for anything, it was
+cross-validated bidirectionally: a cookie minted by the real SDK's
+`generateSessionCookie()` decrypts correctly here, and a cookie minted here
+decrypts correctly via the SDK's own `decrypt()` — byte-for-byte compatible,
+independently confirmed both ways.
+
+`audit/verify_runtime.py` then crafts session cookies purely in Python and
+drives the live server:
+
+```bash
+AUTH0_SECRET=... python3 audit/verify_runtime.py http://localhost:3000
+```
+
+(needs `app/api/connection-token-test/route.ts` — a small route added
+alongside this test, calling `getAccessTokenForConnection()` and reporting
+its error code, since the SDK has no built-in HTTP endpoint for that method)
+
+**Result — 6/6, including a sanity check and a control:**
+
+```
+[PASS] Sanity: /auth/profile accepts a from-scratch Python-minted session cookie
+[PASS] /auth/profile: ceiling 1yr in the FUTURE is accepted
+[PASS] /api/connection-token-test: reaches Auth0 for a FUTURE-ceiling session
+[PASS] /auth/profile: ceiling 1yr in the PAST is REJECTED (401)
+[PASS] /api/connection-token-test: PAST-ceiling session reaches Auth0 too —
+       error code failed_to_exchange_refresh_token, NOT missing_session
+[PASS] CONTROL: no refresh token -> missing_refresh_token (a genuinely local
+       error, proving this test can tell "blocked locally" apart from
+       "reached Auth0" when it should see the former)
+```
+
+The distinguishing signal is the error *code*, not just success/failure:
+`AccessTokenForConnectionErrorCode.MISSING_SESSION` would mean the SDK
+blocked the request locally (ceiling enforced, same as `/auth/profile`);
+`FAILED_TO_EXCHANGE` means the request reached Auth0's token endpoint and
+was rejected *there* (fake connection name, fake refresh token — expected).
+For the year-past-ceiling session, the code was `failed_to_exchange_refresh_token`
+— identical to the future-ceiling baseline — confirming the ceiling made no
+difference to this code path at runtime, end to end, through the real stack.
+
 ## 5. Impact
 
 IPSIE-style session ceilings exist specifically for enterprise

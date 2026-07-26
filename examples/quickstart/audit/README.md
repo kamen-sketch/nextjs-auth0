@@ -60,6 +60,37 @@ about Auth0's own server-side enforcement — the open questions in
 `FINDING-connect-account-cross-session.md` remain open regardless of what
 this script finds.
 
+## Runtime verification (`verify_runtime.py`) — real HTTP, no JS tooling
+
+`verify_findings.py` above is static (text parsing, no execution).
+`verify_runtime.py` goes one step further for finding W: it drives the
+*actual running* example app over real HTTP, using session cookies minted by
+a from-scratch Python re-implementation of the SDK's own JWE scheme
+(`nextjs_auth0_jwe.py` — HKDF-SHA256 + AES-256-GCM, no `jose`, no
+`@panva/hkdf`, no JS at any point). That crypto was cross-validated
+bidirectionally before being trusted: a cookie from the real SDK's
+`generateSessionCookie()` decrypts correctly in Python, and a cookie minted
+in Python decrypts correctly via the SDK's own `decrypt()`.
+
+```bash
+pnpm dev &                                        # terminal 1
+set -a && . ./.env.local && set +a
+python3 audit/verify_runtime.py http://localhost:3000
+```
+
+Needs `app/api/connection-token-test/route.ts` (present in this tree) — a
+small route calling `getAccessTokenForConnection()` and reporting its error
+code, added because the SDK has no built-in HTTP endpoint for that method.
+Result: a session whose IPSIE ceiling passed a year ago is rejected by
+`/auth/profile` (401, the primary path enforcing it) but
+`getAccessTokenForConnection()` still reaches Auth0's token endpoint to
+attempt an exchange for it (`failed_to_exchange_refresh_token`, not
+`missing_session`) — the same outcome as a session whose ceiling is nowhere
+near reached. A control (session with no refresh token at all, expected
+`missing_refresh_token`) confirms this test can tell "blocked locally" apart
+from "reached Auth0" when it should see the former, so the main result isn't
+just an artifact of a test that can't distinguish the two.
+
 ## Coverage
 
 | Group | What it asserts |
@@ -86,7 +117,7 @@ this script finds.
 | T | `returnTo` open redirect (`audit6-returnto-open-redirect.mjs` + `returnto-open-redirect.callback-proof.test.ts`) — P4, see below |
 | U | Connection-token cache not invalidated on shrink (`audit7-connection-token-resurrection.mjs`) — real bug, **security framing retracted on review**: `connectionTokenSets` is a pure cache with no gatekeeping role. Writeup: [`FINDING-connection-token-resurrection.md`](./FINDING-connection-token-resurrection.md) |
 | V | Connect-account completion not bound to initiating session (`connect-account-cross-session.callback-proof.test.ts`) — SDK-level defense confirmed absent; server-side (Auth0) enforcement **not yet verified**, live test designed but on hold pending manual follow-up. Writeup: [`FINDING-connect-account-cross-session.md`](./FINDING-connect-account-cross-session.md) |
-| W | IPSIE session-ceiling bypass for connection tokens (`ipsie-ceiling-connection-token-bypass.proof.test.ts`) — **confirmed, no server-side caveat**: `getAccessTokenForConnection()` mints fresh third-party tokens for sessions whose enterprise-mandated ceiling passed a year ago. Writeup: [`FINDING-ipsie-ceiling-connection-token-bypass.md`](./FINDING-ipsie-ceiling-connection-token-bypass.md) |
+| W | IPSIE session-ceiling bypass for connection tokens (`ipsie-ceiling-connection-token-bypass.proof.test.ts` + `verify_runtime.py`, real HTTP) — **confirmed at both the SDK-test level and live-server runtime level, no server-side caveat**: `getAccessTokenForConnection()` mints fresh third-party tokens for sessions whose enterprise-mandated ceiling passed a year ago. Writeup: [`FINDING-ipsie-ceiling-connection-token-bypass.md`](./FINDING-ipsie-ceiling-connection-token-bypass.md) |
 
 ## Dynamic base URL mode
 

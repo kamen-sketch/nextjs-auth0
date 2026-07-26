@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint .",
     "audit:auth": "node audit/audit.mjs && node audit/audit2.mjs && node audit/audit3.mjs && node audit/audit5-malformed-session.mjs && node audit/audit6-returnto-open-redirect.mjs && node audit/audit7-connection-token-resurrection.mjs",
-    "audit:verify": "python3 audit/verify_findings.py"
+    "audit:verify": "python3 audit/verify_findings.py",
+    "audit:runtime": "python3 audit/verify_runtime.py"
   },
   "dependencies": {
     "@auth0/nextjs-auth0": "^4.25.0",
