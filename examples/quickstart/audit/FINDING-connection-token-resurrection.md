@@ -1,12 +1,39 @@
-# Revoked connection tokens are silently and permanently resurrected
+# RETRACTED (security framing) — stale `connectionTokenSets` cache entry not cleaned up
+
+> **Status update:** on further review, the security framing below (CWE-459/613,
+> "broken revocation") does not hold up and is retracted. `connectionTokenSets`
+> has exactly one consumer in the entire SDK —
+> `getAccessTokenForConnection()`/`getConnectionTokenSet()` in `client.ts`
+> (confirmed by an exhaustive grep; no other file reads the field). There, an
+> existing entry is used **only** to decide whether a network round-trip can be
+> skipped:
+>
+> ```ts
+> if (tokenSet.refreshToken && (!connectionTokenSet || connectionTokenSet.expiresAt <= now)) {
+>   // exchange for a new one — runs regardless of whether an entry existed
+> }
+> ```
+>
+> `connectionTokenSets` is a **cache**, not an access-control list. Calling
+> `getAccessTokenForConnection('connC')` succeeds identically whether or not
+> `connC` is currently in the array — as long as the primary refresh token is
+> valid, it just re-fetches via token exchange and repopulates the entry. So
+> even a *correctly* cleaned-up array was never preventing the app from
+> re-obtaining the same connection's token; "removing an entry" was never a
+> revocation, only a cache-size optimization. The bug (orphaned `__FC_N`
+> cookies surviving a shrink) is real and reproduces exactly as documented
+> below, but its consequence is a stale cache entry / unnecessary cookie, not
+> a broken security control. Kept here for the record, with the retraction
+> up front, rather than deleted, so the investigation trail stays honest.
 
 **Component:** `@auth0/nextjs-auth0` — `StatelessSessionStore` (the default session
 store; no `sessionStore` option configured)
 **Affected:** v4.25.0 (latest published) and `main` at the time of testing
-**Class:** CWE-459 (Incomplete Cleanup) / CWE-613 (Insufficient Session
-Expiration) — broken revocation, not a classic input-validation vulnerability
-**Reporter posture:** documented for the maintainers to triage; not yet
-reported upstream
+**Class:** ~~CWE-459 (Incomplete Cleanup) / CWE-613 (Insufficient Session
+Expiration)~~ — downgraded to a cache-invalidation/cookie-hygiene bug, not a
+security defect (see retraction notice above)
+**Reporter posture:** candidate for a low-priority GitHub issue (cookie
+cleanup / unbounded cookie growth), not a security advisory
 
 ---
 

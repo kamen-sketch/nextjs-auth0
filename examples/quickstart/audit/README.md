@@ -42,7 +42,7 @@ so no real user account or browser is needed.
 | R | Dynamic base URL mode (`audit4-dynamic.mjs`, separate server) — see below |
 | S | Malformed-session robustness (`audit5-malformed-session.mjs`) — surfaces the middleware-500 bug below |
 | T | `returnTo` open redirect (`audit6-returnto-open-redirect.mjs` + `returnto-open-redirect.callback-proof.test.ts`) — P4, see below |
-| U | Connection-token resurrection (`audit7-connection-token-resurrection.mjs`) — **the strongest finding; full writeup: [`FINDING-connection-token-resurrection.md`](./FINDING-connection-token-resurrection.md)** |
+| U | Connection-token cache not invalidated on shrink (`audit7-connection-token-resurrection.mjs`) — real bug, **security framing retracted on review**: `connectionTokenSets` is a pure cache with no gatekeeping role. Writeup: [`FINDING-connection-token-resurrection.md`](./FINDING-connection-token-resurrection.md) |
 
 ## Dynamic base URL mode
 
@@ -63,7 +63,19 @@ uses `node:http` for that one case.
 
 ## Known findings
 
-### Revoked connection tokens are silently resurrected (incomplete cleanup)
+### Stale connection-token cache entry survives a shrink (not a security finding — see retraction)
+
+> **Retracted as a security finding.** `connectionTokenSets` has exactly one
+> consumer in the whole SDK (`getAccessTokenForConnection()` in `client.ts`),
+> where an existing entry only decides whether a network round-trip can be
+> skipped — it is never a gate. `getAccessTokenForConnection('x')` succeeds
+> identically whether or not `x` is currently in the array, as long as the
+> primary refresh token is valid. So even a correctly-cleaned-up array was
+> never preventing anything; "removing an entry" was a cache-size
+> optimization, not a revocation. The mechanism described below is real and
+> reproduces exactly as documented, but the consequence is a stale cache
+> entry / unbounded cookie growth, not broken access control. Full detail:
+> [`FINDING-connection-token-resurrection.md`](./FINDING-connection-token-resurrection.md).
 
 **Severity: real, but not a classic VRT category — closer to CWE-459
 (Incomplete Cleanup) / broken revocation than a textbook web vuln.** Found by
